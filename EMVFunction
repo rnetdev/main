@@ -1,0 +1,505 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Xml;
+using System.Xml.Serialization;
+using System.IO;
+using System.Windows.Forms;
+using EmvInterface;
+using EmvPinpad;
+using System.Threading;
+
+namespace EMV
+{
+    public class EMVFunction
+    {
+        static StopEMV stopEMV;  // 9809
+
+        private static XmlNode elementParameters;
+
+        private static EmvInterface.clsRequestTreatment deal;
+        private static EmvInterface.clsInput inputObj;
+        private static EmvPinpad.clsPinPad pinpad;
+        private static EmvInterface.clsGlobal globalObj;
+        private static EmvInterface.clsReceipt Receipt;
+
+        public static string TCPDir;
+
+        private static DateTime dStart;
+
+        private static DateTime t1, t2, t3, t4, t5;
+        private static string cancelRes = "";
+
+        public static string DirectFunction(string Function, string parameters)
+        {
+            XmlDocument doc = new XmlDocument();
+            doc.InnerXml = parameters;
+            string xmlOut = "";
+            try
+            {
+                elementParameters = doc.SelectSingleNode("Parameters");
+
+                switch (Function)
+                {
+                    case "Send":
+                        xmlOut = send();
+                        break;
+                }
+            }
+            catch (Exception e) { return "<Result><ResultType>Error</ResultType><ResultString>Error in function " + e.Message + "</ResultString></Result>"; };
+            return xmlOut;
+        }
+
+        private static string send()
+        {
+            try
+            {
+                Log.Log.WriteLog("EMVFunction", "send", "Start", "");
+                Log.Log.WriteLog("EMVFunction", "send", "XML=" + elementParameters.OuterXml, "");
+
+                int res;
+                string cmd = elementParameters.SelectSingleNode("Cmd").InnerXml;
+                string sMsg, TranRecord = "";
+
+                if (cmd == "") cmd = "AshGen";
+
+                if (cmd == "AshGen" || cmd == "AshPinPadStart" || deal == null) deal = new EmvInterface.clsRequestTreatment();
+                if (cmd == "AshGen" || cmd == "AshPinPadStart" || inputObj == null) inputObj = new EmvInterface.clsInput();
+                if (cmd == "AshGen" || cmd == "AshPinPadStart" || pinpad == null) pinpad = new EmvPinpad.clsPinPad();
+                if (cmd == "AshGen" || cmd == "AshPinPadStart" || globalObj == null) globalObj = new EmvInterface.clsGlobal();
+                //Receipt;
+
+//                deal.serialCommPort = "COM9";
+                deal.serialCommPort = elementParameters.SelectSingleNode("ComPort").InnerXml; 
+                if (deal.serialCommPort == "Com0")  // 9780
+                {
+                    System.Management.ManagementObjectCollection mReturn;
+                    System.Management.ManagementObjectSearcher mSearch;
+                    mSearch = new System.Management.ManagementObjectSearcher("Select * from Win32_SerialPort");
+                    mReturn = mSearch.Get();
+
+                    foreach (System.Management.ManagementObject mObj in mReturn)
+                    {
+                        switch (mObj["Description"].ToString())
+                        {
+                            case "PIN Pad 791":
+                            case "USB Serial Port":
+                            case "VX 805 Terminal":
+                                string com = mObj["DeviceId"].ToString();
+                                if (com.Remove(3).ToUpper() == "COM")
+                                    deal.serialCommPort = com;
+                                break;
+                        }
+                    }
+                }
+
+                deal.path.workingDirectory = elementParameters.SelectSingleNode("workingDirectory").InnerXml; // @"C:\Emv\EmvInterface\";  for example. 
+
+                inputObj.creditTerms = elementParameters.SelectSingleNode("CreditTerms").InnerXml; // "1"; // Credit type 
+                inputObj.tranType = elementParameters.SelectSingleNode("TranType").InnerXml; // "01"; // Charge 
+                inputObj.amount = elementParameters.SelectSingleNode("Amount").InnerXml; // "100100";
+
+                if (elementParameters.SelectSingleNode("Mti").InnerXml == "400")
+                {
+                    Log.Log.WriteLog("EMVFunction", "send", "Mti=400", "");
+
+                    inputObj.mti = "400";
+                    inputObj.originalUid                     = elementParameters.SelectSingleNode("OriginalUid").InnerXml;
+                    //inputObj.originalTranDate                = elementParameters.SelectSingleNode("OriginalTranDate").InnerXml;
+                    //inputObj.originalTranTime                = elementParameters.SelectSingleNode("OriginalTranTime").InnerXml;
+                    inputObj.originalAmount                  = elementParameters.SelectSingleNode("OriginalAmount").InnerXml;
+                    inputObj.originalAuthNum                 = elementParameters.SelectSingleNode("OriginalAuthNum").InnerXml;
+                    inputObj.originalAuthorizationCodeManpik = elementParameters.SelectSingleNode("OriginalAuthorizationCodeManpik").InnerXml;
+                    inputObj.originalAuthSolekNum            = elementParameters.SelectSingleNode("OriginalAuthSolekNum").InnerXml;
+                    inputObj.originalAuthorizationCodeSolek  = elementParameters.SelectSingleNode("OriginalAuthorizationCodeSolek").InnerXml;
+                    inputObj.rrn                             = elementParameters.SelectSingleNode("RRN").InnerXml;
+                }
+
+                if (cmd == "AshGen" || cmd == "AshPinPadStart" || cmd == "AshGenHand")
+                {
+                    Log.Log.WriteLog("EMVFunction", "send", "cmd = AshGen", "");
+
+                    //מבחן ידני/
+                    //if (cmd == "AshGenHand")
+                    //{
+                    inputObj.mti = elementParameters.SelectSingleNode("Mti").InnerXml; // "Pinpad" // "4557440410014812";
+                    inputObj.clientInputPan = elementParameters.SelectSingleNode("ClientInputPan").InnerXml; // "Pinpad" // "4557440410014812";
+                    inputObj.expirationDate = elementParameters.SelectSingleNode("ExpirationDate").InnerXml; // "1905";
+                    inputObj.panEntryMode = elementParameters.SelectSingleNode("PanEntryMode").InnerXml; //"51";
+                    inputObj.authorizationNo = elementParameters.SelectSingleNode("AuthorizationNo").InnerXml;
+                    inputObj.id = elementParameters.SelectSingleNode("Id").InnerXml;
+                    inputObj.cvv2 = elementParameters.SelectSingleNode("Cvv2").InnerXml;
+                    if (inputObj.authorizationNo != "")
+                        inputObj.authorizationCodeManpik = "5";
+                    //    string UserName = elementParameters.SelectSingleNode("UserName").InnerXml; //"SKAAB"; for example 
+                    //    string Password = elementParameters.SelectSingleNode("Password").InnerXml; //"RNET2016"; for example 
+                    //}
+                    //else
+                    //    inputObj.clientInputPan = "Pinpad";
+
+                    // נתונים קבועים
+                    inputObj.currency = elementParameters.SelectSingleNode("Currency").InnerXml; // "376"; // ILS 
+                    inputObj.parameterJ = elementParameters.SelectSingleNode("ParameterJ").InnerXml; // "0";
+
+                    //// עסקת אשראי
+                    //inputObj.noPayments = "1";
+
+                    //// תשלומים
+                    inputObj.firstPayment = elementParameters.SelectSingleNode("FirstPaymentSum").InnerXml;
+                    inputObj.notFirstPayment = elementParameters.SelectSingleNode("RestPaymentSum").InnerXml;
+                    inputObj.noPayments = elementParameters.SelectSingleNode("NumPayments").InnerXml;
+
+                    //// עסקת קשבק
+                    //inputObj.cashbackAmount = "50";
+
+                    //// עסקת הוראת קבע
+                    //// איתחול
+                    //inputObj.stndOrdrFreq = "30";
+                    //inputObj.stndOrdrTotalNo = "30";
+                    //inputObj.stndOrdrTotalSum = "30";
+                    //// תשלום תורן
+                    //inputObj.stndOrdrNo = "2";
+                    //inputObj.originalUid = "2";
+                    //inputObj.originalTranDate = "2";
+                    //inputObj.originalTranTime = "2";
+                    //inputObj.originalAmount = "2";
+                    //inputObj.originalAuthNum = "2";
+                    //inputObj.originalAuthorizationCodeManpik = "2";
+
+                    pinpad.workingDirectory = deal.path.workingDirectory;
+                }
+
+                //bool r = deal.PinPadDeviceInitialize(@"C:\Emv\EmvInterface\", "COM9");
+
+                bool expectedStatus = false;
+                bool returned = false;
+
+                switch (cmd)
+                {
+                    case "AshGen":
+                        Log.Log.WriteLog("EMVFunction", "send", "case AshGen", "");
+
+                        //Int64 t1 = DateTime.Now.Ticks;
+
+                        // תהליך בדיקת ביטול
+                        // 9809
+                        System.Threading.Thread thread = null;
+                        thread = new System.Threading.Thread(cancelFunc);
+                        thread.Start();
+
+                        //        res = deal.AshGen(inputObj, ref globalObj);
+
+                        //res = deal.PinPadStart(ref inputObj, ref pinpad);
+
+                        //if (res == 0)
+                        //    res = deal.AshStart(inputObj, ref pinpad, ref globalObj);
+
+                        //if (res == 0)
+                        //    res = deal.AshAuth(inputObj, ref pinpad, ref globalObj);
+
+                        //if (res == 0)
+                        //    res = deal.AshEnd(inputObj, ref pinpad, ref globalObj);
+
+                        //Log.Log.WriteLog("EMVFunction", "send", "res=" + res.ToString(), "");
+
+                        //if (res != 0)
+                        //deal.PinPadCancel("", "", pinpad);
+
+                        //deal.PinPadEnd(inputObj, ref pinpad);
+
+
+
+
+                        //EmvInterface.clsRequestTreatment deal = new EmvInterface.clsRequestTreatment();
+                        //EmvInterface.clsInput inputObj = new EmvInterface.clsInput();
+                        //EmvPinpad.clsPinPad pinpadObj = new EmvPinpad.clsPinPad();
+                        //EmvInterface.clsGlobal globalObj = new EmvInterface.clsGlobal();
+                        //EmvInterface.clsReceipt Receipt;
+
+                        string AuthNum = "";
+
+                        try
+                        {
+                                                                // Reference to Web Service of distributor
+                            //EMVWeb.EmvRequest EMVReq = new EMVWeb.EmvRequest();
+                            //// Initialization objects from WEB
+                            //EMVWeb.clsInput webInputObj = new EMVWeb.clsInput();
+                            //EMVWeb.clsPinPad webPinpadObj = new EMVWeb.clsPinPad();
+                            //EMVWeb.clsGlobal webGlobalObj = new EMVWeb.clsGlobal();
+                            //EMVReq.Timeout = 30000; // 30 second
+                            //deal.url = "URL of distributer's Web Service ";
+
+                            res = deal.PinPadStart(ref inputObj, ref pinpad);//start transaction on POS
+                            if (pinpad.bStopExamine) // Check if should be continue
+                            {
+                                deal.ForceStop(inputObj, pinpad, ref globalObj, true);
+                                goto seeResult;
+                            }
+
+                            // copy objects have been changed locally to same WEB's objects
+                            //webInputObj = (EMVWeb.clsInput)deal.CopyObjTo(webInputObj, inputObj);
+                            //webPinpadObj = (EMVWeb.clsPinPad)deal.CopyObjTo(webPinpadObj, pinpadObj);
+
+                            // Check if is it EMV transaction
+                            if (Convert.ToInt32(inputObj.panEntryMode) == 40) // EMV
+                            {
+                                // Here developer's Web Service gets data from POS and calls AshStart
+                                // function from EMVInterface.dll on server's site
+                                res = deal.AshStart(inputObj, ref pinpad, ref globalObj);
+                                // copy objects have been changed in WEB to locally objects
+                                //pinpad = (EmvPinpad.clsPinPad)deal.CopyObjTo(pinpad, webPinpadObj);
+                                // developer can get transaction's properties here ...
+                                // 777 - success , 41/42 - authorization is needed for J2
+                                if (res == 777 || res == 41 || res == 42)
+                                {
+                                    string pan = globalObj.outputObj.pan.valueTag;
+                                    string manpik = globalObj.outputObj.manpik.valueTag;
+                                    string cardtype = globalObj.outputObj.spType.valueTag;
+                                }
+                                // Check if process should be continue (777)
+                                // if there is error or J2 – stop here
+                                if (res != 777 || inputObj.parameterJ == "2")
+                                {
+                                    deal.ForceStop(inputObj, pinpad, ref globalObj, false);
+                                    goto seeResult;
+                                }
+
+                                // pass to PinPad first ashrait's decision
+                                res = deal.PinPadAuth(inputObj, ref pinpad);
+
+                                if (pinpad.bStopExamine) // Check if should be continue
+                                {
+                                    deal.ForceStop(inputObj, pinpad, ref globalObj, true);
+                                    goto seeResult;
+                                }
+
+                                // If online authorization is required (Pin Pad can decline or approved transaction offline), developer
+                                // should call AshAuth function from EMVInterface on server's site via his Web Service
+                                // Authorization required
+                                if (res == 777)
+                                {
+                                    // copy objects have been changed locally to parallel WEB objects
+//                                    webPinpadObj = (EMVWeb.clsPinPad)deal.CopyObjTo(webPinpadObj, pinpadObj);
+                                    // Here developer's Web Service gets data from POS and calls AshAuth
+                                    // function from EMVInterface.dll on server's site
+                                    res = deal.AshAuth(inputObj, ref pinpad, ref globalObj);
+                                    // copy objects have been changed in WEB to locally objects
+                                    //pinpad = (EmvPinpad.clsPinPad)deal.CopyObjTo(pinpadObj, webPinpadObj);
+                                }
+
+                                // pass to Pin Pad result of authorization
+                                res = deal.PinPadEnd(inputObj, ref pinpad);
+                                // Check if process should be continue (777)
+                                // if there is error or J5 – stop here ,otherwise
+                                // call to AshEnd for write transaction on server's site via developer's Web Service
+                                if (res == 777 && inputObj.parameterJ != "5")
+                                {
+                                    // copy objects have been changed locally to parallel WEB objects
+                                    //webPinpadObj = (EMVWeb.clsPinPad)deal.CopyObjTo(webPinpadObj, pinpadObj);
+                                    // Here developer's Web Service gets data from POS and calls AshEnd
+                                    // function from EMVInterface.dll on server's site
+                                    res = deal.AshEnd(inputObj, ref pinpad, ref globalObj);
+                                    // copy objects have been changed in WEB to locally objects
+                                    //pinpad = (EmvPinpad.clsPinPad)deal.CopyObjTo(pinpadObj, webPinpadObj);
+                                }
+                            }
+                            // It is not EMV transaction we can call AshGen function once only
+                            else
+                            {
+                                res = deal.AshFull(inputObj, pinpad, ref globalObj);
+                                deal.PinPadEnd(inputObj, ref pinpad);
+                            }
+
+                            deal.PinPadFinishTransaction(inputObj, pinpad, res == 0);
+
+                            if (res == 0)
+                            {
+                                Receipt = globalObj.receiptObj;
+                                TranRecord = globalObj.outputObj.tranRecord.valueTag;
+                                AuthNum = globalObj.outputObj.authManpikNo.valueTag;
+                            }
+                        }
+                        catch (Exception Ex)
+                        {
+                            res = 999; // Global error
+                            deal.ForceStop(inputObj, pinpad, ref globalObj, false);
+                        }
+
+                        //MessageBox.Show("Result = " + res.ToString() + " Description = " +
+                        //webGlobalObj.outputObj.ashStatusDes.valueTag +
+                        //"\r\n AuthNum = " + AuthNum + " Tran Record = " + TranRecord);
+                        //return;
+
+                        seeResult:
+
+                        thread.Interrupt();
+                        stopEMV.Close();  // 9809
+
+
+                        //t1 = DateTime.Now.Ticks - t1;
+                        //if (res == 0 && inputObj.mti == "100" && t1 > 40 * 1000 * 10000)
+                        //{
+                        //    Log.Log.WriteLog("EMVFunction", "send", "cancel because near timeout", (t1/1000/10000).ToString());
+
+                        //    inputObj.mti = "400";
+                        //    inputObj.originalUid = globalObj.outputObj.uid.valueTag;
+
+                        //    inputObj.field55 = globalObj.outputObj.field55.valueTag;
+                        //    Log.Log.WriteLog("EMVFunction", "send", "globalObj.outputObj.field55.valueTag=" + inputObj.field55, "");
+
+                        //    res = deal.AshGen(inputObj, ref globalObj);
+                        //    Log.Log.WriteLog("EMVFunction", "send", "res of cancel=" + res.ToString(), "");
+
+                        //    if (res == 0) returned = true;
+                        //}
+
+                        expectedStatus = res == 0;
+                        break;
+                    case "AshPinPadStart":
+                        Log.Log.WriteLog("EMVFunction", "send", "case AshPinPadStart", "");
+
+                        res = deal.AshPinPadStart(ref inputObj, ref pinpad, ref globalObj);
+                        expectedStatus = res == 777;
+                        break;
+                    case "AshPinPadProcess":
+                        Log.Log.WriteLog("EMVFunction", "send", "case AshPinPadProcess", "");
+
+                        res = deal.AshPinPadProcess(inputObj, pinpad, ref globalObj);
+                        expectedStatus = res == 0;
+                        break;
+                }
+
+
+                //res = deal.AshGen(MerchantNumber, UserName, Password, ref inputObj, ref pinpad, ref globalObj);
+
+                if (returned)
+                {
+                    string t = "<Result>"
+                    + "<ResultType>Reject</ResultType>"
+                    + "<AshStatus>" + "-1" + "</AshStatus>"
+                    + "<AshStatusDes>" + "עבר זמן רב מדי" + "</AshStatusDes>"
+                    + "<TelAuthAbility>" + "</TelAuthAbility>"
+                    + "</Result>";
+
+                    Log.Log.WriteLog("EMVFunction", "send", "return", t);
+                    return t;
+                }
+                else
+                if (expectedStatus)
+                {
+                    XmlSerializer xmlSerializer = new XmlSerializer(globalObj.receiptObj.GetType());
+
+                    string s;
+                    using (StringWriter textWriter = new StringWriter())
+                    {
+                        xmlSerializer.Serialize(textWriter, globalObj.receiptObj);
+                        s = textWriter.ToString();
+                    }
+
+                    s = s.Substring(s.IndexOf("\r\n") + 2);
+                    s = s.Substring(s.IndexOf("\r\n") + 2);
+                    s = s.Replace("</clsReceipt>", "");
+                    s = s.Replace("\r", "");
+                    s = s.Replace("\n", "");
+
+                    string t = "<Result>"
+                        + "<ResultType>Succeeded</ResultType>"
+                        + "<AshStatus>" + globalObj.outputObj.ashStatus.valueTag + "</AshStatus>"
+                        + "<AshStatusDes>" + globalObj.outputObj.ashStatusDes.valueTag + "</AshStatusDes>"
+                        + "<AuthManpikNo>" + globalObj.outputObj.authManpikNo.valueTag + "</AuthManpikNo>"
+                        + "<AuthCodeManpik>" + globalObj.outputObj.authCodeManpik.valueTag + "</AuthCodeManpik>"
+                        + "<AuthSolekNo>" + globalObj.outputObj.authSolekNo.valueTag + "</AuthSolekNo>"
+                        + "<AuthCodeSolek>" + globalObj.outputObj.authCodeSolek.valueTag + "</AuthCodeSolek>"
+                        + "<Solek>" + globalObj.outputObj.solek.valueTag + "</Solek>"
+                        + "<Manpik>" + globalObj.outputObj.manpik.valueTag + "</Manpik>"
+                        + "<Brand>" + globalObj.outputObj.brand.valueTag + "</Brand>"
+                        + "<TerminalName>" + globalObj.outputObj.terminalName.valueTag + "</TerminalName>"
+                        + "<Retailer>" + globalObj.outputObj.retailer.valueTag + "</Retailer>"
+                        + "<CompRetailerNum>" + globalObj.outputObj.compRetailerNum.valueTag + "</CompRetailerNum>"
+                        + "<Uid>" + globalObj.outputObj.uid.valueTag + "</Uid>"
+                        + "<CardName>" + globalObj.outputObj.cardName.valueTag + "</CardName>"
+                        + "<Pan>" + globalObj.outputObj.pan.valueTag + "</Pan>"
+                        + "<Seq>" + globalObj.outputObj.fileNo.valueTag + globalObj.outputObj.termNo.valueTag + globalObj.outputObj.termSeq.valueTag + "</Seq>"
+                        + "<PanEntryMode>" + globalObj.outputObj.panEntryMode.valueTag + "</PanEntryMode>"
+                        + "<ExpirationDate>" + globalObj.outputObj.expirationDate.valueTag + "</ExpirationDate>"
+                        + "<RRN>" + globalObj.outputObj.rrn.valueTag + "</RRN>"
+                        + "<DspBalance>" + globalObj.outputObj.dspBalance.valueTag + "</DspBalance>"
+                        + "<Receipt>" + s + "</Receipt>"
+                        //+ "<>" + globalObj.outputObj.OriginalTranTime.valueTag + "</>"
+                        //+ "<>" + globalObj.outputObj.OriginalAmount.valueTag + "</>"
+                        //+ "<>" + globalObj.outputObj.RRN.valueTag + "</>"
+                        //+ "<>" + globalObj.outputObj..valueTag + "</>"
+                        //+ "<>" + globalObj.outputObj..valueTag + "</>"
+                        //+ "<>" + globalObj.outputObj..valueTag + "</>"
+                        //+ "<>" + globalObj.outputObj..valueTag + "</>"
+                        //+ "<>" + globalObj.outputObj..valueTag + "</>"
+                        //+ "<>" + globalObj.outputObj..valueTag + "</>"
+                        //+ "<>" + globalObj.outputObj..valueTag + "</>"
+                        + "</Result>";
+
+                    Log.Log.WriteLog("EMVFunction", "send", "return", "OK xml");
+                    return t;
+                }
+                else
+                {
+                    string t = "<Result>"
+                        + "<ResultType>Reject</ResultType>"
+                        + "<AshStatus>" + globalObj.outputObj.ashStatus.valueTag + "</AshStatus>"
+                        + "<AshStatusDes>" + globalObj.outputObj.ashStatusDes.valueTag + "</AshStatusDes>"
+                        + "<TelAuthAbility>" + globalObj.outputObj.telAuthAbility.valueTag + "</TelAuthAbility>"
+                        + "</Result>";
+
+                    Log.Log.WriteLog("EMVFunction", "send", "return", t);
+                    return t;
+                }
+                
+            }
+            catch (Exception Ex)
+            {
+                string t = "<Result>"
+                    + "<ResultType>Error</ResultType>"
+                    + "<AshStatusDes>" + Ex.Message + "</AshStatusDes>"
+                    + "</Result>";
+
+                Log.Log.WriteLog("EMVFunction", "send", "return", t);
+                return t;
+            }
+        }
+
+        public static void cancelFunc()
+        {
+            // 9809
+            stopEMV = new StopEMV();
+            stopEMV.Show();
+            System.Windows.Threading.Dispatcher.Run();
+
+            //System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
+            //t.Interval = 1000;
+            //t.Enabled = true;
+            //t.Tick += new EventHandler(timerTick);
+        }
+
+        public static void Click()
+        {
+            //EmvInterface.clsRequestTreatment deal1 = new EmvInterface.clsRequestTreatment();
+
+            //deal1.serialCommPort = deal.serialCommPort;
+            //deal1.path.workingDirectory = deal.path.workingDirectory;
+
+            //EmvPinpad.clsPinPad pinpad;
+            //pinpad = new EmvPinpad.clsPinPad();
+
+            //EmvPinpad.clsPinPad pinpad1 = (EmvPinpad.clsPinPad)pinpad;
+
+            // 9809
+            int res = deal.PinPadCancel(deal.path.workingDirectory, deal.serialCommPort, pinpad);
+
+            //    if (res != -34)
+            //{
+
+            //}
+
+        }
+    }
+}
